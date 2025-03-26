@@ -12,8 +12,8 @@ app.use(bodyParser.json());
 const db = mysql.createConnection({
     host: 'localhost',
     user: 'root', // Change if needed
-    password: '', // Change if needed
-    database: 'mydbs'
+    password: 'Omkar@23-24', // Change if needed
+    database: 'agritechecom'
 });
 
 db.connect(err => {
@@ -21,29 +21,52 @@ db.connect(err => {
         console.error('Database connection failed:', err);
     } else {
         console.log('Connected to MySQL');
+        // Create table if it doesn't exist
+        db.query(`
+            CREATE TABLE IF NOT EXISTS farmers (
+                farmer_id INT AUTO_INCREMENT PRIMARY KEY,
+                farm_name VARCHAR(255) NOT NULL,
+                latitude DECIMAL(10, 8) NOT NULL,
+                longitude DECIMAL(11, 8) NOT NULL,
+                redirect_page VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `, (err) => {
+            if (err) {
+                console.error('Error creating table:', err);
+            } else {
+                console.log('Farmers table is ready');
+            }
+        });
     }
 });
 
 // API: Get all markers
 app.get('/markers', (req, res) => {
-    db.query('SELECT * FROM markers', (err, results) => {
+    db.query('SELECT farmer_id, farm_name, latitude, longitude, redirect_page FROM farmers', (err, results) => {
         if (err) return res.status(500).send(err);
         res.json(results);
     });
 });
 
 // API: Add a new marker
-app.post('/markers', (req, res) => {
-    const { name, latitude, longitude, url } = req.body;
-    if (!name || !latitude || !longitude || !url) {
+app.post('/farm-marker', (req, res) => {
+    const { farm_name, latitude, longitude, redirect_page } = req.body;
+    if (!farm_name || !latitude || !longitude || !redirect_page) {
         return res.status(400).json({ error: 'Invalid data' });
     }
 
-    db.query('INSERT INTO markers (name, latitude, longitude, url) VALUES (?, ?, ?, ?)', 
-    [name, latitude, longitude, url], 
+    db.query('INSERT INTO farmers (farm_name, latitude, longitude, redirect_page) VALUES (?, ?, ?, ?)', 
+    [farm_name, latitude, longitude, redirect_page], 
     (err, result) => {
         if (err) return res.status(500).send(err);
-        res.json({ id: result.insertId, name, latitude, longitude, url });
+        res.json({ 
+            id: result.insertId, 
+            farm_name, 
+            latitude, 
+            longitude, 
+            redirect_page 
+        });
     });
 });
 
