@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive Map with Live Tracking</title>
+    <title>Interactive Map with Database</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
     <style>
         body { 
             font-family: Arial, sans-serif; 
@@ -26,7 +27,7 @@
             justify-content: center;
             gap: 10px;
         }
-        input { 
+        input, select { 
             padding: 8px; 
             border-radius: 4px;
             border: 1px solid #ccc;
@@ -51,31 +52,41 @@
     </style>
 </head>
 <body>
-    <h2>Interactive Map with Live Tracking</h2>
-    <p>Your real-time location is shown with a blue circle. Click on the map to add custom markers.</p>
-    
+    <h2>Interactive Map with Database Integration</h2>
     <div id="map"></div>
     
     <div class="input-container">
         <input type="text" id="placeName" placeholder="Enter place name" required>
         <input type="url" id="placeUrl" placeholder="Enter webpage URL" required>
+        <select id="radiusFilter">
+            <option value="1">1 km</option>
+            <option value="5" selected>5 km</option>
+            <option value="10">10 km</option>
+            <option value="20">20 km</option>
+        </select>
         <button onclick="addMarkerManually()">Add Marker</button>
-        <button onclick="centerOnLocation()">Center on My Location</button>
+        <button onclick="showMarkersInRadius()">Show Markers in Radius</button>
+        <button onclick="createRouteToNearest()">Route to Nearest Marker</button>
+        <button onclick="refreshMarkers()">Refresh Markers</button>
     </div>
     <div class="status" id="status"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
     <script>
-        // Initialize map
+        // Map and marker management
         var map = L.map('map').setView([18.5360, 73.8587], 13);
         var statusElement = document.getElementById('status');
+        var savedMarkers = []; // Store all markers
+        var currentRoute = null;
+        var markersLayer = new L.LayerGroup().addTo(map);
         
-        // Add tile layer
+        // Tile layer
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
         
-        // Create custom icons
+        // Custom icons
         var userLocationIcon = L.divIcon({
             className: 'user-location',
             html: '<div style="background-color: #1e88e5; border: 2px solid white; border-radius: 50%; width: 15px; height: 15px; box-shadow: 0 0 0 4px rgba(30, 136, 229, 0.4), 0 0 0 8px rgba(30, 136, 229, 0.2);"></div>',
@@ -93,10 +104,134 @@
             shadowSize: [41, 41]
         });
         
-        // Initialize user location marker
+        // Variables for location tracking
         var userLocationMarker = null;
         var accuracyCircle = null;
         var lastClickedLatLng = null;
+        var currentUserLocation = null;
+        
+        // Haversine formula to calculate distance between two points
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Radius of the Earth in kilometers
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = 
+                Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c; // Distance in kilometers
+        }
+        
+        // Refresh markers from database
+        function refreshMarkers() {
+            // Clear existing markers
+            markersLayer.clearLayers();
+            savedMarkers = [];
+            
+            // Fetch markers from server
+            fetch('http://localhost:3000/markers')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(markers => {
+                    savedMarkers = markers;
+                    markers.forEach(place => {
+                        const marker = L.marker([place.latitude, place.longitude], {icon: customMarkerIcon})
+                            .bindPopup(`<b>${place.name}</b><br><a href="${place.url}" target="_blank">Visit Page</a>`);
+                        markersLayer.addLayer(marker);
+                    });
+                    
+                    statusElement.textContent = `Loaded ${markers.length} markers from database`;
+                })
+                .catch(error => {
+                    console.error('Error fetching markers:', error);
+                    statusElement.textContent = 'Failed to load markers from database';
+                });
+        }
+        
+        // Show markers within a specified radius
+        function showMarkersInRadius() {
+            if (!currentUserLocation) {
+                alert("Location not available. Please wait for location tracking.");
+                return;
+            }
+            
+            // Clear previous markers
+            markersLayer.clearLayers();
+            
+            // Get selected radius
+            const radius = parseFloat(document.getElementById('radiusFilter').value);
+            
+            // Filter and add markers within radius
+            let markersInRadius = 0;
+            savedMarkers.forEach(place => {
+                const distance = calculateDistance(
+                    currentUserLocation.lat, currentUserLocation.lng,
+                    place.latitude, place.longitude
+                );
+                
+                if (distance <= radius) {
+                    const marker = L.marker([place.latitude, place.longitude], {icon: customMarkerIcon})
+                        .bindPopup(`<b>${place.name}</b><br>Distance: ${distance.toFixed(2)} km<br><a href="${place.url}" target="_blank">Visit Page</a>`);
+                    markersLayer.addLayer(marker);
+                    markersInRadius++;
+                }
+            });
+            
+            statusElement.textContent = `Found ${markersInRadius} markers within ${radius} km`;
+        }
+        
+        // Create route to nearest marker
+        function createRouteToNearest() {
+            if (!currentUserLocation) {
+                alert("Location not available. Please wait for location tracking.");
+                return;
+            }
+            
+            // Remove previous route if exists
+            if (currentRoute) {
+                map.removeControl(currentRoute);
+            }
+            
+            // Find nearest marker
+            let nearestMarker = null;
+            let minDistance = Infinity;
+            
+            savedMarkers.forEach(place => {
+                const distance = calculateDistance(
+                    currentUserLocation.lat, currentUserLocation.lng,
+                    place.latitude, place.longitude
+                );
+                
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    nearestMarker = place;
+                }
+            });
+            
+            if (!nearestMarker) {
+                alert("No markers found to route to.");
+                return;
+            }
+            
+            // Create routing
+            currentRoute = L.Routing.control({
+                waypoints: [
+                    L.latLng(currentUserLocation.lat, currentUserLocation.lng),
+                    L.latLng(nearestMarker.latitude, nearestMarker.longitude)
+                ],
+                routeWhileDragging: true,
+                router: L.Routing.osrmv1({
+                    serviceUrl: 'https://router.project-osrm.org/route/v1'
+                })
+            }).addTo(map);
+            
+            statusElement.textContent = `Routing to ${nearestMarker.name} (${minDistance.toFixed(2)} km away)`;
+        }
         
         // Track user location
         function trackLocation() {
@@ -105,25 +240,28 @@
                 
                 navigator.geolocation.watchPosition(
                     (position) => {
-                        let userLocation = [position.coords.latitude, position.coords.longitude];
+                        currentUserLocation = L.latLng(
+                            position.coords.latitude, 
+                            position.coords.longitude
+                        );
                         let accuracy = position.coords.accuracy;
                         
                         // Create or update the user location marker
                         if (userLocationMarker) {
-                            userLocationMarker.setLatLng(userLocation);
+                            userLocationMarker.setLatLng(currentUserLocation);
                         } else {
-                            userLocationMarker = L.marker(userLocation, {
+                            userLocationMarker = L.marker(currentUserLocation, {
                                 icon: userLocationIcon,
-                                zIndexOffset: 1000 // Make sure this marker appears on top
+                                zIndexOffset: 1000
                             }).addTo(map)
                               .bindPopup("You are here");
                         }
                         
                         // Create or update accuracy circle
                         if (accuracyCircle) {
-                            accuracyCircle.setLatLng(userLocation).setRadius(accuracy);
+                            accuracyCircle.setLatLng(currentUserLocation).setRadius(accuracy);
                         } else {
-                            accuracyCircle = L.circle(userLocation, {
+                            accuracyCircle = L.circle(currentUserLocation, {
                                 radius: accuracy,
                                 color: '#1e88e5',
                                 fillColor: '#1e88e5',
@@ -134,7 +272,7 @@
                         
                         // Center map on first location fix
                         if (!map.hasInitialLocation) {
-                            map.setView(userLocation, 15);
+                            map.setView(currentUserLocation, 15);
                             map.hasInitialLocation = true;
                         }
                         
@@ -149,37 +287,6 @@
                 );
             } else {
                 statusElement.textContent = "Geolocation is not supported by your browser.";
-            }
-        }
-        
-        // Function to center map on user's location
-        function centerOnLocation() {
-            if (userLocationMarker) {
-                map.setView(userLocationMarker.getLatLng(), 15);
-            } else {
-                statusElement.textContent = "Location not yet available";
-            }
-        }
-        
-        // Get saved markers from server
-        function fetchMarkers() {
-            try {
-                fetch('http://localhost:3000/markers')
-                    .then(response => response.json())
-                    .then(data => {
-                        data.forEach(place => {
-                            L.marker([place.latitude, place.longitude], {icon: customMarkerIcon}).addTo(map)
-                                .bindPopup(`<b>${place.name}</b><br><a href="${place.url}" target="_blank">Visit Page</a>`);
-                        });
-                        statusElement.textContent = "Loaded " + data.length + " markers from server";
-                    })
-                    .catch(error => {
-                        console.error("Failed to fetch markers:", error);
-                        statusElement.textContent = "Could not connect to marker server. Custom markers will not be saved.";
-                    });
-            } catch (error) {
-                console.error("Failed to fetch markers:", error);
-                statusElement.textContent = "Could not connect to marker server. Custom markers will not be saved.";
             }
         }
         
@@ -211,35 +318,40 @@
                 url: url 
             };
             
-            // Add marker to map
-            L.marker([newMarker.latitude, newMarker.longitude], {icon: customMarkerIcon}).addTo(map)
-                .bindPopup(`<b>${newMarker.name}</b><br><a href="${newMarker.url}" target="_blank">Visit Page</a>`)
-                .openPopup();
-            
-            // Try to save to server if available
-            try {
-                fetch('http://localhost:3000/markers', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(newMarker)
-                })
-                .then(response => response.json())
-                .then(data => {
-                    statusElement.textContent = "Marker saved successfully";
-                })
-                .catch(error => {
-                    console.error("Error saving marker:", error);
-                    statusElement.textContent = "Marker added locally but could not be saved to server";
-                });
-            } catch (error) {
-                console.error("Error saving marker:", error);
-                statusElement.textContent = "Marker added locally but could not be saved to server";
-            }
-            
-            // Clear inputs
-            document.getElementById('placeName').value = '';
-            document.getElementById('placeUrl').value = '';
-            lastClickedLatLng = null;
+            // Send to database
+            fetch('http://localhost:3000/markers', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(newMarker)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(savedMarker => {
+                // Add marker to map
+                const marker = L.marker([savedMarker.latitude, savedMarker.longitude], {icon: customMarkerIcon})
+                    .bindPopup(`<b>${savedMarker.name}</b><br><a href="${savedMarker.url}" target="_blank">Visit Page</a>`)
+                    .addTo(markersLayer);
+                
+                // Update saved markers
+                savedMarkers.push(savedMarker);
+                
+                // Clear inputs
+                document.getElementById('placeName').value = '';
+                document.getElementById('placeUrl').value = '';
+                lastClickedLatLng = null;
+                
+                statusElement.textContent = "Marker added to database successfully";
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusElement.textContent = 'Failed to add marker to database';
+            });
         }
         
         // Event handler for map clicks
@@ -253,11 +365,7 @@
         
         // Initialize
         trackLocation();
-        try {
-            fetchMarkers();
-        } catch (e) {
-            console.error("Could not fetch markers:", e);
-        }
+        refreshMarkers();
     </script>
 </body>
 </html>
